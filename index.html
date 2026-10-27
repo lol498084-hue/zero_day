@@ -1,0 +1,680 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Zero Day</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=VT323&display=swap">
+<style>
+/* Layout: one-screen CRT terminal. Header with timer and target tracker on top, scrolling output in the middle, input and quick-command chips at the bottom. */
+:root {
+  --bg: #060d0c;
+  --panel: #0a1513;
+  --line: #17302b;
+  --fg: #a9f0c8;
+  --bright: #e8fff3;
+  --dim: #5b8573;
+  --amber: #ffb454;
+  --cyan: #62d4e8;
+  --red: #ff7a7a;
+  --font-display: 'VT323', 'Courier New', monospace;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  overflow-x: hidden;
+}
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand { font-family: var(--font-display); font-size: 38px; line-height: 1; letter-spacing: 0.08em; color: var(--bright); }
+.brand b { color: var(--amber); font-weight: 400; }
+.timer { font-family: var(--font-display); font-size: 30px; line-height: 1; color: var(--amber); font-variant-numeric: tabular-nums; }
+.targets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 12.5px; }
+.targets .lbl { color: var(--dim); letter-spacing: 0.16em; text-transform: uppercase; font-size: 11px; }
+.tgt { display: inline-flex; align-items: center; gap: 7px; color: var(--dim); }
+.pip { width: 9px; height: 9px; background: var(--line); display: inline-block; }
+.tgt.open { color: var(--amber); }
+.tgt.open .pip { background: var(--amber); }
+.tgt.owned { color: var(--bright); }
+.tgt.owned .pip { background: var(--fg); box-shadow: 0 0 8px var(--fg); }
+
+.term {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: text;
+}
+.term::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,0.16) 3px);
+}
+.bar { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+.bar span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.out { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; font-size: 13.5px; line-height: 1.55; text-shadow: 0 0 6px rgba(120, 255, 190, 0.22); }
+.ln { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.55em; }
+.ln.dim { color: var(--dim); }
+.ln.err { color: var(--red); }
+.ln.ok { color: var(--bright); }
+.ln.warn { color: var(--amber); }
+.ln.cmd { color: var(--bright); }
+.ln .ps { color: var(--cyan); }
+.ln.big { font-family: var(--font-display); font-size: 44px; line-height: 1.05; letter-spacing: 0.06em; color: var(--bright); text-shadow: 0 0 14px rgba(120, 255, 190, 0.5); }
+.ln .hostname, .ln .file { color: var(--cyan); }
+.ln .hidden { color: var(--amber); }
+.ln button.link { all: unset; cursor: pointer; color: var(--cyan); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.ln button.link.hidden { color: var(--amber); }
+.ln button.link:hover { text-decoration-color: currentColor; }
+.ln button.link:focus-visible { outline: 1px solid var(--amber); outline-offset: 2px; }
+.ln .res { display: block; margin: 6px 0; padding: 10px 12px; border: 1px dashed var(--dim); color: var(--bright); user-select: text; }
+
+form.row { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-top: 1px solid var(--line); position: relative; z-index: 1; }
+.ps1 { color: var(--cyan); flex: none; white-space: nowrap; font-size: 13.5px; }
+#inp {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--bright);
+  font: 16px var(--font-mono);
+  caret-color: var(--amber);
+  caret-shape: block;
+  padding: 4px 0;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip, .ln button.chip {
+  font: 12.5px var(--font-mono);
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 7px 11px;
+  min-height: 34px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.chip:hover, .ln button.chip:hover { color: var(--fg); border-color: var(--dim); }
+.chip:focus-visible, .ln button.chip:focus-visible, #inp:focus-visible { outline: 1px solid var(--amber); outline-offset: 2px; }
+.ln .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.ln button.chip { color: var(--fg); }
+
+@media (max-width: 520px) {
+  .ps1 .u { display: none; }
+  .brand { font-size: 34px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<header>
+  <div class="brand">ZERO<b>/</b>DAY</div>
+  <div class="timer" id="timer" aria-label="Время">00:00</div>
+</header>
+<div class="targets" id="targets" aria-label="Цели"></div>
+
+<main class="term" id="term">
+  <div class="bar"><span>сессия</span><span id="session">nullbyte@gate</span></div>
+  <div class="out" id="out" role="log" aria-live="polite"></div>
+  <form class="row" id="f" autocomplete="off">
+    <span class="ps1" id="ps1"></span>
+    <input id="inp" type="text" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" aria-label="Команда">
+  </form>
+</main>
+
+<div class="chips" id="chips">
+  <button class="chip" type="button" data-cmd="help">help</button>
+  <button class="chip" type="button" data-cmd="scan">scan</button>
+  <button class="chip" type="button" data-cmd="ls">ls</button>
+  <button class="chip" type="button" data-cmd="ls -a">ls -a</button>
+  <button class="chip" type="button" data-cmd="status">status</button>
+  <button class="chip" type="button" data-cmd="hint">hint</button>
+</div>
+
+<script>
+(function () {
+  var out = document.getElementById('out');
+  var inp = document.getElementById('inp');
+  var form = document.getElementById('f');
+  var ps1 = document.getElementById('ps1');
+  var sessionEl = document.getElementById('session');
+  var timerEl = document.getElementById('timer');
+  var targetsEl = document.getElementById('targets');
+  var term = document.getElementById('term');
+
+  var HOSTS = {
+    'gate': {
+      ip: '10.0.0.1', user: 'nullbyte', ports: '', desc: 'твой ноутбук',
+      files: {
+        'readme.txt': 'Привет, nullbyte.\n\nЦель: bank-corp. Достань оттуда флаг.\nДо него несколько шагов, по одному на каждый хост.\n\nНачни с: scan',
+        'notes.txt': 'Правила взломщика:\n1. Люди ленивы.\n2. Пароли лежат в файлах.\n3. Скрытые файлы начинаются с точки (ls -a).'
+      }
+    },
+    'cafe-wifi': {
+      ip: '10.0.13.37', user: 'admin', pass: '123456', ports: '22, 80', desc: 'кофейня «Зерно»',
+      files: {
+        'menu.txt': 'КОФЕЙНЯ «ЗЕРНО»\nКапучино: 250\nЛатте: 280\nСырник: 190\nWi-Fi: zerno_guest (пароль спросите у бариста)',
+        'schedule.txt': 'Пн-Пт 8:00-22:00\nВс выходной\nКот-охранник работает без выходных.',
+        '.bash_history': 'ls\ncd /var/www\nping 10.0.42.7\nssh admin@10.0.42.7\n# пароль от камеры для кота: murzik2019\n# не забыть стереть эту историю\nexit'
+      }
+    },
+    'cat-cam': {
+      ip: '10.0.42.7', user: 'admin', pass: 'murzik2019', ports: '22, 8080', desc: 'камера для кота',
+      files: {
+        'cam01.log': '[03:12] движение: кот\n[03:14] движение: кот\n[03:15] движение: тоже кот\n[04:40] движение: человек в худи (это ты)',
+        'todo.txt': '1. Купить корм (лосось, не курица!)\n2. Починить объектив\n3. VPN банка (я там подрабатываю): kotlet\n4. Не потерять ключ шифрования, лежит в скрытом файле',
+        '.vault.key': 'N3ON-7F9A  (ключ от vault.enc)'
+      }
+    },
+    'bank-corp': {
+      ip: '10.0.66.6', user: 'teller', pass: 'kotlet', ports: '22, 443', desc: 'главная цель',
+      files: {
+        'welcome.txt': 'BANK-CORP / внутренняя сеть\nНесанкционированный доступ запрещён.\n(Но пароль хранился у кота на виду. Разберёмся.)',
+        'payroll.csv': 'имя,должность,зарплата\nИван,бухгалтер,150000\nМаргарита,директор,900000\nСтажёр,стажёр,печеньки',
+        'vault.enc': 'U2FsdGVkX19kZXZubDB2ZXN6M3IwZGF5X2NhdA==\n[зашифровано. Нужен ключ: decrypt vault.enc <ключ>]'
+      }
+    }
+  };
+  Object.keys(HOSTS).forEach(function (k) { HOSTS[k].key = k; });
+  var TARGETS = ['cafe-wifi', 'cat-cam', 'bank-corp'];
+  var KEY = 'N3ON-7F9A';
+  var FLAG = 'FLAG{z3r0_d4y_c4t_s4ys_m30w}';
+  var CMD_NAMES = ['help', 'scan', 'connect', 'ssh', 'crack', 'ls', 'cat', 'decrypt', 'status', 'hint', 'exit', 'clear', 'whoami', 'pwd'];
+
+  var S;
+  function fresh() {
+    return { host: 'gate', logged: { 'gate': true }, cracked: {}, scanned: false, cmds: 0, hints: 0,
+      t0: 0, tEnd: 0, tick: null, busy: false, awaiting: null, history: [], hi: 0, won: false, decrypted: false };
+  }
+  S = fresh();
+
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+  function scrollDown() { out.scrollTop = out.scrollHeight; }
+  function line(text, cls) {
+    var d = document.createElement('div');
+    d.className = 'ln' + (cls ? ' ' + cls : '');
+    d.textContent = text === undefined ? '' : text;
+    out.appendChild(d);
+    scrollDown();
+    return d;
+  }
+  function lines(arr, cls) { arr.forEach(function (t) { line(t, cls); }); }
+  // parts: array of strings or {t, cls, fill, run}
+  function rich(parts, cls) {
+    var d = document.createElement('div');
+    d.className = 'ln' + (cls ? ' ' + cls : '');
+    parts.forEach(function (p) {
+      if (typeof p === 'string') { d.appendChild(document.createTextNode(p)); return; }
+      if (p.fill || p.run) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'link' + (p.cls ? ' ' + p.cls : '');
+        b.textContent = p.t;
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (S.awaiting) cancelPassword();
+          if (p.run) { submit(p.run); } else { inp.value = p.fill; inp.focus(); }
+        });
+        d.appendChild(b);
+      } else {
+        var s = document.createElement('span');
+        s.className = p.cls || '';
+        s.textContent = p.t;
+        d.appendChild(s);
+      }
+    });
+    out.appendChild(d);
+    scrollDown();
+    return d;
+  }
+
+  function fmtTime() {
+    var end = S.won ? S.tEnd : Date.now();
+    var s = S.t0 ? Math.max(0, Math.floor((end - S.t0) / 1000)) : 0;
+    var m = Math.floor(s / 60), r = s % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+  }
+  function renderTimer() { timerEl.textContent = fmtTime(); }
+  function startTimer() {
+    S.t0 = Date.now();
+    S.tick = setInterval(renderTimer, 1000);
+    renderTimer();
+  }
+
+  function renderPrompt() {
+    var h = HOSTS[S.host];
+    ps1.textContent = '';
+    var u = document.createElement('span');
+    u.className = 'u';
+    u.textContent = h.user + '@';
+    ps1.appendChild(u);
+    ps1.appendChild(document.createTextNode(S.host + ' $'));
+    sessionEl.textContent = h.user + '@' + S.host + (h.ip ? '  ' + h.ip : '');
+  }
+  function renderTargets() {
+    targetsEl.textContent = '';
+    var l = document.createElement('span');
+    l.className = 'lbl';
+    l.textContent = 'цели';
+    targetsEl.appendChild(l);
+    TARGETS.forEach(function (k) {
+      var st = S.logged[k] ? 'owned' : (S.cracked[k] ? 'open' : '');
+      var t = document.createElement('span');
+      t.className = 'tgt' + (st ? ' ' + st : '');
+      t.title = st === 'owned' ? 'доступ получен' : (st === 'open' ? 'пароль найден' : (S.scanned ? 'закрыт' : 'не разведан'));
+      var p = document.createElement('i');
+      p.className = 'pip';
+      t.appendChild(p);
+      t.appendChild(document.createTextNode(S.scanned ? k : '???'));
+      targetsEl.appendChild(t);
+    });
+  }
+  function updateUI() { renderPrompt(); renderTargets(); }
+
+  function resolve(name) {
+    if (!name) return null;
+    name = name.toLowerCase();
+    if (name.indexOf('@') >= 0) name = name.split('@').pop();
+    var found = null;
+    Object.keys(HOSTS).forEach(function (k) {
+      if (k === name || HOSTS[k].ip === name) found = HOSTS[k];
+    });
+    return found;
+  }
+
+  // ---------- intro ----------
+  function intro() {
+    line('ZERO DAY v1.0 / тренажёр взлома. Всё в игре выдумано, настоящих систем здесь нет.', 'dim');
+    line('');
+    line('Ты nullbyte, и ты внутри своего ноутбука (gate).');
+    line('В сети три цели. Главная: bank-corp, там лежит флаг.');
+    line('');
+    rich(['Введи ', { t: 'help', run: 'help' }, ', чтобы увидеть команды, или ', { t: 'scan', run: 'scan' }, ', чтобы начать разведку.'], '');
+    line('Застрял? Команда hint подскажет следующий шаг.', 'dim');
+    line('');
+  }
+
+  // ---------- commands ----------
+  var C = {};
+
+  C.help = function () {
+    line('Команды:', 'ok');
+    lines([
+      '  scan              найти хосты',
+      '  connect <хост>    зайти по ssh',
+      '  crack <хост>      подобрать пароль',
+      '  ls [-a]           файлы (-a скрытые)',
+      '  cat <файл>        прочитать файл',
+      '  decrypt <ф> <к>   расшифровать файл',
+      '  status            что уже сделано',
+      '  hint              подсказка',
+      '  exit              вернуться на gate',
+      '  clear             очистить экран',
+      '',
+      'Tab дополняет имена, стрелки вверх и вниз листают историю.'
+    ]);
+    out.lastChild.className = 'ln dim';
+  };
+
+  C.scan = async function () {
+    S.busy = true;
+    line('[*] nmap -sn 10.0.0.0/16', 'dim');
+    await sleep(500);
+    line('[*] отправляю пакеты...', 'dim');
+    await sleep(700);
+    S.scanned = true;
+    line('Найдено хостов: 3', 'ok');
+    TARGETS.forEach(function (k) {
+      var h = HOSTS[k];
+      rich(['  ', h.ip + '  ', { t: k, fill: 'connect ' + k, cls: '' }]);
+      line('    порты ' + h.ports + ' / ' + h.desc, 'dim');
+    });
+    line('Нажми на имя хоста или набери connect <хост>. У слабых хостов можно попробовать crack.', 'dim');
+    S.busy = false;
+  };
+
+  C.ls = function (args) {
+    var h = HOSTS[S.host];
+    var all = args.some(function (a) { return a === '-a' || a === '-la' || a === '-al'; });
+    var names = Object.keys(h.files).filter(function (n) { return all || n.charAt(0) !== '.'; });
+    if (!names.length) { line('(пусто)', 'dim'); return; }
+    var parts = [];
+    names.forEach(function (n, i) {
+      if (i) parts.push('   ');
+      parts.push({ t: n, run: 'cat ' + n, cls: n.charAt(0) === '.' ? 'hidden' : '' });
+    });
+    rich(parts);
+  };
+
+  C.cat = function (args) {
+    var f = args[0];
+    if (!f) { line('Использование: cat <файл>', 'err'); return; }
+    var h = HOSTS[S.host];
+    if (!Object.prototype.hasOwnProperty.call(h.files, f)) {
+      line('cat: ' + f + ': нет такого файла. Посмотри ls (и ls -a).', 'err');
+      return;
+    }
+    line(h.files[f]);
+  };
+
+  C.connect = function (args) {
+    var t = args[0];
+    if (!t) { line('Использование: connect <хост>   (например: connect cafe-wifi)', 'err'); return; }
+    var h = resolve(t);
+    if (!h || (h.key !== 'gate' && !S.scanned)) {
+      line('ssh: не удалось найти хост ' + t + (S.scanned ? '.' : '. Сеть ещё не разведана, начни с scan.'), 'err');
+      return;
+    }
+    if (S.logged[h.key]) {
+      S.host = h.key;
+      line('[+] переключаюсь на ' + h.key, 'ok');
+      return;
+    }
+    S.awaiting = h.key;
+    line('Connecting to ' + h.ip + ':22 ...', 'dim');
+    line(h.user + '@' + h.ip + "'s password:");
+    inp.type = 'password';
+    ps1.textContent = 'пароль:';
+  };
+  C.ssh = C.connect;
+
+  function cancelPassword() {
+    S.awaiting = null;
+    inp.type = 'text';
+    updateUI();
+  }
+
+  function handlePassword(raw) {
+    var h = HOSTS[S.awaiting];
+    cancelPassword();
+    line(h.user + '@' + h.ip + "'s password: " + new Array(raw.length + 1).join('*'), 'dim');
+    var typed = raw.trim();
+    if (typed === h.pass || typed.split(/[\s:]+/).indexOf(h.pass) >= 0) {
+      S.logged[h.key] = true;
+      S.host = h.key;
+      line('Access granted. Добро пожаловать на ' + h.key + '.', 'ok');
+      line('Загляни в файлы: ls', 'dim');
+    } else {
+      line('Permission denied, please try again.', 'err');
+      line('Вводи только пароль, без логина и лишних символов. Пароль нужно найти в файлах или через crack.', 'dim');
+    }
+    updateUI();
+  }
+
+  async function bar(label, steps, ms) {
+    var d = line('');
+    for (var i = 0; i <= steps; i++) {
+      var pct = Math.round(i * 100 / steps);
+      var filled = Math.round(i * 20 / steps);
+      d.textContent = label + ' [' + new Array(filled + 1).join('#') + new Array(21 - filled).join('-') + '] ' + pct + '%';
+      scrollDown();
+      await sleep(ms);
+    }
+  }
+
+  C.crack = async function (args) {
+    var t = args[0];
+    if (!t) { line('Использование: crack <хост>   (например: crack cafe-wifi)', 'err'); return; }
+    var h = resolve(t);
+    if (!h || !S.scanned) {
+      line('crack: цель не найдена. ' + (S.scanned ? '' : 'Сначала scan.'), 'err');
+      return;
+    }
+    if (h.key === 'gate') { line('Взламывать самого себя? Это уже перебор.', 'warn'); return; }
+    if (S.logged[h.key]) { line('Ты уже внутри ' + h.key + '.', 'dim'); return; }
+    S.busy = true;
+    line('[*] hydra -l ' + h.user + ' -P rockyou.txt ssh://' + h.ip, 'dim');
+    line('[*] словарь: 14 344 391 паролей', 'dim');
+    if (h.key === 'cafe-wifi') {
+      await bar('[*] подбор', 14, 130);
+      S.cracked[h.key] = true;
+      line('[+] найден пароль для ' + h.user + ': ' + h.pass, 'ok');
+      line('Теперь зайди: connect cafe-wifi, и введи этот пароль.', 'dim');
+    } else if (h.key === 'cat-cam') {
+      await bar('[*] подбор', 14, 90);
+      line('[!] fail2ban: твой IP заблокирован после 5 неудачных попыток.', 'err');
+      line('Брутфорс тут не сработает. Люди любят хранить пароли в файлах, поищи пароль в другом месте.', 'warn');
+    } else {
+      await bar('[*] подбор', 14, 70);
+      line('[!] политика паролей: 24 символа и спецсимволы.', 'err');
+      line('hashcat оценивает перебор в 400 лет. Ищи другой путь.', 'warn');
+    }
+    S.busy = false;
+  };
+
+  C.decrypt = async function (args) {
+    var f = args[0], k = args[1];
+    if (!f || !k) { line('Использование: decrypt <файл> <ключ>', 'err'); return; }
+    var h = HOSTS[S.host];
+    if (!Object.prototype.hasOwnProperty.call(h.files, f)) { line('decrypt: ' + f + ': нет такого файла.', 'err'); return; }
+    if (f !== 'vault.enc') { line('decrypt: ' + f + ' не зашифрован, просто прочитай его (cat).', 'warn'); return; }
+    S.busy = true;
+    line('[*] openssl enc -d -aes-256-cbc -in vault.enc', 'dim');
+    await bar('[*] расшифровка', 12, 110);
+    if (k.trim().toUpperCase() !== KEY) {
+      line('[!] bad decrypt: ключ не подходит.', 'err');
+      S.busy = false;
+      return;
+    }
+    S.busy = false;
+    win();
+  };
+
+  function win() {
+    S.won = true;
+    S.tEnd = Date.now();
+    clearInterval(S.tick);
+    renderTimer();
+    var secs = Math.floor((S.tEnd - S.t0) / 1000);
+    var rank = (secs < 180 && S.hints === 0) ? 'Легенда' : (secs < 420 ? 'Профи' : 'Скрипт-кидди');
+    var time = fmtTime();
+    line('');
+    line('ACCESS GRANTED', 'big');
+    line('[+] vault.enc расшифрован', 'ok');
+    line(FLAG, 'warn');
+    line('');
+    line('Время ' + time + ' / команд ' + S.cmds + ' / подсказок ' + S.hints + ' / звание: ' + rank, 'ok');
+    var text = 'Я взломал bank-corp в ZERO DAY за ' + time + ', команд: ' + S.cmds + ', подсказок: ' + S.hints + '. Звание: ' + rank + '. Сможешь быстрее?';
+    var row = document.createElement('div');
+    row.className = 'ln';
+    var res = document.createElement('span');
+    res.className = 'res';
+    res.textContent = text;
+    row.appendChild(res);
+    var chips = document.createElement('div');
+    chips.className = 'chip-row';
+    var copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'chip';
+    copy.textContent = 'Скопировать результат';
+    copy.addEventListener('click', async function (e) {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(text);
+        copy.textContent = 'Скопировано';
+      } catch (err) {
+        var r = document.createRange();
+        r.selectNodeContents(res);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        copy.textContent = 'Текст выделен, скопируй вручную';
+      }
+    });
+    var again = document.createElement('button');
+    again.type = 'button';
+    again.className = 'chip';
+    again.textContent = 'Сыграть заново';
+    again.addEventListener('click', function (e) { e.stopPropagation(); reset(); });
+    chips.appendChild(copy);
+    chips.appendChild(again);
+    row.appendChild(chips);
+    out.appendChild(row);
+    scrollDown();
+  }
+
+  C.status = function () {
+    function mark(ok) { return ok ? '[x] ' : '[ ] '; }
+    line('Прогресс:', 'ok');
+    lines([
+      mark(S.scanned) + 'разведка сети (scan)',
+      mark(S.logged['cafe-wifi']) + 'кофейня cafe-wifi',
+      mark(S.logged['cat-cam']) + 'камера cat-cam',
+      mark(S.logged['bank-corp']) + 'банк bank-corp',
+      mark(S.won) + 'расшифровать vault.enc'
+    ]);
+  };
+
+  C.hint = function () {
+    S.hints++;
+    var m;
+    if (!S.scanned) m = 'Начни с разведки: scan покажет, какие хосты есть в сети.';
+    else if (!S.logged['cafe-wifi']) m = S.cracked['cafe-wifi'] ? 'Пароль уже найден. Заходи: connect cafe-wifi' : 'У кофейни слабая защита. Попробуй crack cafe-wifi: брутфорс по словарю.';
+    else if (!S.logged['cat-cam']) m = 'Ты в кофейне. Посмотри все файлы, включая скрытые: ls -a. Админы забывают чистить историю команд.';
+    else if (!S.logged['bank-corp']) m = 'На cat-cam в todo.txt лежит пароль от банка. Заходи: connect bank-corp';
+    else m = 'vault.enc зашифрован. Ключ лежит в скрытом файле на cat-cam (cat .vault.key). Потом: decrypt vault.enc <ключ>';
+    line('[hint] ' + m, 'warn');
+  };
+
+  C.exit = function () {
+    if (S.host === 'gate') { line('Выхода нет. Ты хакер.', 'warn'); return; }
+    line('Connection to ' + S.host + ' closed.', 'dim');
+    S.host = 'gate';
+  };
+  C.clear = function () { out.textContent = ''; };
+  C.whoami = function () { line(HOSTS[S.host].user); };
+  C.pwd = function () { line('/home/' + HOSTS[S.host].user); };
+  C.echo = function (args) { line(args.join(' ')); };
+  C.date = function () { line(new Date().toString()); };
+  C.ping = function () { line('pong. Кот в камере смотрит на тебя.'); };
+  C.sudo = function () { line('nullbyte не входит в sudoers. Этот инцидент будет записан. Шутка.', 'warn'); };
+  C.rm = function () { line('Мы тут взламываем, а не ломаем. Файлы остаются на месте.', 'warn'); };
+  C.hack = function () { line('Одной командой не взломаешь. Но ты на правильном пути, введи scan.', 'warn'); };
+  C.man = function () { line('Ручного режима нет, зато есть help.', 'dim'); };
+
+  // ---------- input ----------
+  function echoCmd(text) {
+    var h = HOSTS[S.host];
+    rich([{ t: h.user + '@' + S.host + ' $ ', cls: 'ps' }, text], 'cmd');
+  }
+
+  async function submit(raw) {
+    if (S.busy) return;
+    if (S.awaiting) { handlePassword(raw); return; }
+    var text = raw.trim();
+    echoCmd(text);
+    if (!text) return;
+    if (!S.t0) startTimer();
+    if (S.won && !/^(clear|help|status)$/i.test(text.split(/\s+/)[0])) {
+      // игра пройдена, но терминал остаётся рабочим
+    }
+    S.cmds++;
+    S.history.push(text);
+    S.hi = S.history.length;
+    var parts = text.split(/\s+/);
+    var cmd = parts[0].toLowerCase();
+    var args = parts.slice(1);
+    if (Object.prototype.hasOwnProperty.call(C, cmd)) {
+      try { await C[cmd](args); } catch (e) { line('Ошибка: ' + e.message, 'err'); S.busy = false; }
+    } else {
+      line('bash: ' + parts[0] + ': команда не найдена. Введи help.', 'err');
+    }
+    updateUI();
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var v = inp.value;
+    inp.value = '';
+    submit(v);
+  });
+
+  function commonPrefix(arr) {
+    var p = arr[0];
+    for (var i = 1; i < arr.length; i++) { while (arr[i].indexOf(p) !== 0) p = p.slice(0, -1); }
+    return p;
+  }
+  function complete() {
+    var v = inp.value;
+    var parts = v.split(/\s+/);
+    var cur = parts[parts.length - 1];
+    var pool = [];
+    if (parts.length === 1) pool = CMD_NAMES;
+    else {
+      var c = parts[0].toLowerCase();
+      if (c === 'cat' || (c === 'decrypt' && parts.length === 2)) pool = Object.keys(HOSTS[S.host].files);
+      else if (c === 'connect' || c === 'ssh' || c === 'crack') pool = S.scanned ? TARGETS.concat(['gate']) : [];
+      else if (c === 'ls') pool = ['-a'];
+    }
+    var m = pool.filter(function (x) { return x.indexOf(cur) === 0; });
+    if (!m.length) return;
+    parts[parts.length - 1] = m.length === 1 ? m[0] : commonPrefix(m);
+    inp.value = parts.join(' ') + (m.length === 1 && parts.length === 1 ? ' ' : '');
+  }
+
+  inp.addEventListener('keydown', function (e) {
+    if (S.awaiting) {
+      if (e.key === 'c' && e.ctrlKey || e.key === 'Escape') { e.preventDefault(); line('^C', 'dim'); inp.value = ''; cancelPassword(); }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (S.hi > 0) { S.hi--; inp.value = S.history[S.hi] || ''; }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (S.hi < S.history.length - 1) { S.hi++; inp.value = S.history[S.hi]; }
+      else { S.hi = S.history.length; inp.value = ''; }
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      complete();
+    } else if (e.key === 'l' && e.ctrlKey) {
+      e.preventDefault();
+      C.clear();
+    }
+  });
+
+  term.addEventListener('click', function () {
+    var sel = window.getSelection();
+    if (!sel || sel.toString() === '') inp.focus();
+  });
+
+  document.getElementById('chips').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-cmd]');
+    if (!b) return;
+    if (S.awaiting) { cancelPassword(); }
+    submit(b.getAttribute('data-cmd'));
+  });
+
+  function reset() {
+    clearInterval(S.tick);
+    S = fresh();
+    inp.type = 'text';
+    inp.value = '';
+    out.textContent = '';
+    timerEl.textContent = '00:00';
+    intro();
+    updateUI();
+    inp.focus();
+  }
+
+  intro();
+  updateUI();
+})();
+</script>
+
+</body></html>
